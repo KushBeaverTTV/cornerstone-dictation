@@ -1,0 +1,4 @@
+#044298 deep blue
+#0082E6 mistral blue  
+#B9DAFF light blue
+#FA500F mistral orange (accent)
