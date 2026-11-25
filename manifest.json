@@ -2,15 +2,17 @@
   "schemaVersion": 1,
   "id": "cornerstone.panel",
   "name": "Cornerstone Dictation",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Kush Beaver Productionz",
   "license": "MIT",
   "description": "Cornerstone dictation: local Whisper speech-to-text with Mistral fallback and polish. Live status in the Omarchy bar (idle / listening / transcribing), with push-to-talk actions.",
   "kinds": [
+    "service",
     "bar-widget"
   ],
-  "activation": "on-demand",
+  "keepLoaded": true,
   "entryPoints": {
+    "service": "Service.qml",
     "barWidget": "Panel.qml"
   },
   "barWidget": {

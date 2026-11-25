@@ -1,210 +1,110 @@
 import QtQuick
-import Quickshell
-import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
 // Cornerstone dictation — bar mark is the Cornerstone keystone.
-// Live state from the status file written
-// by omarchy-dictation-cornerstone.
+// Built once per monitor; all watchers, commands and IPC live in Service.qml.
 Panel {
   id: root
   moduleName: "cornerstone"
   ipcTarget: "cornerstone"
   manageIpc: false
 
-  readonly property string home: Quickshell.env("HOME") || ""
-  readonly property string pluginDir: root.home + "/.config/omarchy/plugins/cornerstone.panel"
-  readonly property string statusScript: root.pluginDir + "/cornerstone-status.sh"
+  readonly property var service: bar && bar.shell ? bar.shell.serviceFor("cornerstone.panel") : null
   readonly property string iconPath: Qt.resolvedUrl("assets/cornerstone.png")
-  readonly property string lastTextPath: root.home + "/.local/state/omarchy-dictation-cornerstone/last_text"
-  readonly property string logPath: root.home + "/.local/state/omarchy-dictation-cornerstone/last.log"
 
-  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color muted: Qt.darker(foreground, 1.55)
   readonly property color hairline: Qt.darker(foreground, 2.4)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // Cornerstone palette — yellow / black / white
+  // Cornerstone status accents
   readonly property color brandBlue: "#FFD400"
-  readonly property color brandDeep: "#7A5C00"
-  readonly property color brandLight: "#FFEC99"
   readonly property color brandOrange: "#FF4D00"
   readonly property color recordColor: brandOrange
   readonly property color workColor: brandBlue
-  readonly property color errorColor: "#E11414"
+  readonly property color errorColor: Color.urgent
 
-  // idle | recording | processing | error | nokey
-  property string state: "idle"
-  property string lastText: ""
+  readonly property string state: service ? service.state : "idle"
+  readonly property string lastText: service ? service.lastText : ""
+  readonly property bool polishOn: service ? service.polishOn : true
+  readonly property bool soundsOn: service ? service.soundsOn : true
+  readonly property string styleName: service ? service.styleName : "natural"
+  readonly property string engineName: service ? service.engineName : "local"
+  readonly property string micLabel: service ? service.micLabel : ""
 
-  readonly property bool recording: root.state === "recording"
-  readonly property bool processing: root.state === "processing"
-  readonly property bool broken: root.state === "error" || root.state === "nokey"
-  readonly property bool live: root.recording || root.processing
+  readonly property bool recording: state === "recording"
+  readonly property bool processing: state === "processing"
+  readonly property bool broken: state === "error" || state === "nokey"
+  readonly property bool live: recording || processing
 
-  readonly property color barIconColor: {
-    if (root.recording) return root.recordColor
-    if (root.processing) return root.workColor
-    if (root.state === "error") return root.errorColor
-    if (root.state === "nokey") return root.muted
-    return root.foreground
-  }
+  readonly property string engineText: service ? service.engineLabel() : "Whisper only"
 
   readonly property string statusText: {
-    if (root.state === "recording") return "Listening…"
-    if (root.state === "processing") return root.polishOn ? "Transcribing + polish…" : "Transcribing locally…"
-    if (root.state === "error") return "Last run failed — audio kept, tap Retry"
-    if (root.state === "nokey") return "API key missing"
+    if (state === "recording") return "Listening…"
+    if (state === "processing") return polishOn ? "Transcribing + polish…" : "Transcribing locally…"
+    if (state === "error") return "Last run failed — audio kept, tap Retry"
+    if (state === "nokey") return "API key missing"
     return "Idle — hold Right Option (or Right Ctrl)"
   }
 
   readonly property string statusDetail: {
-    if (root.state === "nokey")
+    if (state === "nokey")
       return "Put your Mistral key in ~/.config/omarchy/dictation-cornerstone/api_key"
-    if (root.lastText.length > 0)
-      return "Last: " + root.lastText
+    if (lastText.length > 0)
+      return "Last: " + lastText
     return "Alt+Space or Super+Shift+Space toggles · click starts/stops"
   }
 
-  // ---------------------------------------------------------------- state
+  readonly property string barTooltip: {
+    if (recording) return "Cornerstone · Listening…"
+    if (processing) return "Cornerstone · Transcribing…"
+    if (state === "error") return "Cornerstone · Last run failed"
+    if (state === "nokey") return "Cornerstone · API key missing"
+    return "Cornerstone · " + engineText
+  }
 
-  Process {
-    id: statusProc
-    command: ["bash", root.statusScript]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var s = String(this.text).trim()
-        if (s === "idle" || s === "recording" || s === "processing" || s === "error" || s === "nokey")
-          root.state = s
-      }
+  readonly property var actionRows: {
+    var rows = []
+    if (recording) rows.push({ id: "stop", label: "Stop listening" })
+    else if (processing) rows.push({ id: "busy", label: "Working… (wait)" })
+    else rows.push({ id: "start", label: "Start dictation" })
+    rows.push({ id: "polish", label: polishOn ? "Polish: ON (tap to disable)" : "Polish: OFF (tap to enable)" })
+    rows.push({ id: "style", label: "Style: " + styleName + " (tap to cycle)" })
+    rows.push({ id: "engine", label: "Engine: " + engineText + " (tap to cycle)" })
+    rows.push({ id: "sounds", label: soundsOn ? "Sounds: ON (tap to disable)" : "Sounds: OFF (tap to enable)" })
+    if (micLabel.length > 0) rows.push({ id: "mic", label: "Mic: " + micLabel + " (tap for config)" })
+    if (lastText.length > 0) rows.push({ id: "copy", label: "Copy last transcript" })
+    if (state === "error") rows.push({ id: "retry", label: "Retry last recording" })
+    if (state === "nokey") rows.push({ id: "key", label: "Open API key file" })
+    rows.push({ id: "cfg", label: "Open config / vocab files" })
+    rows.push({ id: "log", label: "Open last log" })
+    return rows
+  }
+
+  property int cursor: -1
+  onOpenedChanged: {
+    cursor = -1
+    if (opened && service) {
+      service.probeStatus()
+      service.refreshConfig()
     }
   }
 
-  FileView {
-    id: lastTextView
-    path: root.lastTextPath
-    watchChanges: true
-    onLoaded: root.lastText = String(text()).trim()
-    onFileChanged: reload()
-  }
-
-  // Poll fast while live so the bar feels instant; slow when idle.
-  Timer {
-    interval: root.live ? 250 : 900
-    running: true
-    repeat: true
-    onTriggered: if (!statusProc.running) statusProc.running = true
-  }
-
-  function dictateStart() {
-    if (root.bar) root.bar.run("omarchy-dictation start")
-  }
-  function dictateStop() {
-    if (root.bar) root.bar.run("omarchy-dictation stop")
-  }
-  function dictateToggle() {
-    if (root.bar) root.bar.run("omarchy-dictation toggle")
-  }
-  function openLog() {
-    if (root.bar) root.bar.run("omarchy-launch-tui sh -c 'less +G ~/.local/state/omarchy-dictation-cornerstone/last.log'")
-  }
-  function openKeyFile() {
-    if (root.bar) root.bar.run("xdg-open ~/.config/omarchy/dictation-cornerstone/api_key")
-  }
-  function openConfig() {
-    if (root.bar) root.bar.run("xdg-open ~/.config/omarchy/dictation-cornerstone/config.json")
-  }
-  function copyLast() {
-    if (root.lastText.length > 0 && root.bar)
-      root.bar.run("omarchy-dictation-cornerstone copy-last")
-  }
-  function emergencyStop() {
-    if (root.bar) root.bar.run("omarchy-dictation-cornerstone panic")
-  }
-  function retryLast() {
-    if (root.bar) root.bar.run("omarchy-dictation-cornerstone retry")
-  }
-  function polishToggle() {
-    if (!root.bar) return
-    if (root.polishOn) root.bar.run("omarchy-dictation-cornerstone polish-off")
-    else root.bar.run("omarchy-dictation-cornerstone polish-on")
-    polishTimer.start()
-  }
-  function cycleStyle() {
-    if (!root.bar) return
-    var order = ["natural", "chat", "email", "code"]
-    var i = order.indexOf(root.styleName)
-    var next = order[(i < 0 ? 0 : i + 1) % order.length]
-    root.bar.run("omarchy-dictation-cornerstone style " + next)
-    polishTimer.start()
-  }
-  function soundsToggle() {
-    if (!root.bar) return
-    if (root.soundsOn) root.bar.run("omarchy-dictation-cornerstone sounds-off")
-    else root.bar.run("omarchy-dictation-cornerstone sounds-on")
-    polishTimer.start()
-  }
-  function cycleEngine() {
-    if (!root.bar) return
-    var order = ["qwen", "local", "cpu", "mistral"]
-    var i = order.indexOf(root.engineName)
-    var next = order[(i < 0 ? 0 : i + 1) % order.length]
-    root.bar.run("omarchy-dictation-cornerstone engine " + next)
-    polishTimer.start()
-  }
-  function engineLabel() {
-    if (root.engineName === "qwen") return "Qwen + Whisper check"
-    if (root.engineName === "cpu") return "CPU local"
-    if (root.engineName === "mistral") return "Mistral cloud"
-    return "Whisper only"
-  }
-
-  property bool polishOn: true
-  property bool soundsOn: true
-  property string styleName: "natural"
-  property string engineName: "local"
-  property string micLabel: ""
-
-  Process {
-    id: configProc
-    command: ["omarchy-dictation-cornerstone", "config"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var d = JSON.parse(String(this.text))
-          root.polishOn = d.polish !== false
-          root.soundsOn = d.sounds !== false
-          root.styleName = d.style || "natural"
-          root.engineName = d.stt_engine || "local"
-          root.micLabel = d.mic_label || ""
-        } catch (e) {}
-      }
-    }
-  }
-  Timer {
-    id: polishTimer
-    interval: 400
-    onTriggered: { configProc.running = true }
-  }
-  Component.onCompleted: Qt.callLater(function() {
-    statusProc.running = true
-    lastTextView.reload()
-    configProc.running = true
-  })
-
-  IpcHandler {
-    id: ipc
-    target: root.ipcTarget
-    function open(): string { root.toggle(); return root.opened ? "open" : "closed" }
-    function toggle(): string { root.toggle(); return root.opened ? "open" : "closed" }
-    function status(): string { return root.state }
-    function dictate(): string { root.dictateToggle(); return "toggled" }
-    function start(): string { root.dictateStart(); return "starting" }
-    function stop(): string { root.dictateStop(); return "stopping" }
-    function panic(): string { root.emergencyStop(); return "emergency stop" }
-    Component.onCompleted: IpcRegistry.register(ipc)
-    Component.onDestruction: IpcRegistry.unregister(ipc)
+  function runAction(id) {
+    if (!service || id === "busy") return
+    if (id === "start") { service.dictateStart(); root.close() }
+    else if (id === "stop") service.dictateStop()
+    else if (id === "polish") service.polishToggle()
+    else if (id === "style") service.cycleStyle()
+    else if (id === "engine") service.cycleEngine()
+    else if (id === "sounds") service.soundsToggle()
+    else if (id === "mic") { service.openConfig(); root.close() }
+    else if (id === "copy") { service.copyLast(); root.close() }
+    else if (id === "retry") { service.retryLast(); root.close() }
+    else if (id === "key") { service.openKeyFile(); root.close() }
+    else if (id === "cfg") { service.openConfig(); root.close() }
+    else if (id === "log") { service.openLog(); root.close() }
   }
 
   implicitWidth: button.implicitWidth
@@ -214,10 +114,10 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: ""
+    tooltipText: root.opened ? "" : root.barTooltip
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton) root.dictateToggle()
-      else if (buttonCode === Qt.MiddleButton) root.emergencyStop()
+      if (buttonCode === Qt.RightButton && root.service) root.service.dictateToggle()
+      else if (buttonCode === Qt.MiddleButton && root.service) root.service.emergencyStop()
       else root.toggle()
     }
 
@@ -234,26 +134,27 @@ Panel {
           width: 24
           height: 24
           source: root.iconPath
-          sourceSize.width: 128
-          sourceSize.height: 128
+          sourceSize.width: 64
+          sourceSize.height: 64
           fillMode: Image.PreserveAspectFit
-          smooth: false
-          mipmap: false
-          asynchronous: false
+          smooth: true
+          mipmap: true
+          asynchronous: true
           opacity: root.state === "nokey" ? 0.4 : 1.0
           Behavior on opacity {
             NumberAnimation { duration: Style.duration(180); easing.type: Easing.OutCubic }
           }
-          // Pulse while listening / processing
+          // Pulse while listening / processing (respects reduceMotion)
           SequentialAnimation on opacity {
-            running: root.live
+            running: root.live && Style.duration(320) > 0
             loops: Animation.Infinite
-            NumberAnimation { to: 0.35; duration: 320; easing.type: Easing.InOutQuad }
-            NumberAnimation { to: 1.0; duration: 320; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 0.35; duration: Style.duration(320); easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 1.0; duration: Style.duration(320); easing.type: Easing.InOutQuad }
+            onStopped: mark.opacity = root.state === "nokey" ? 0.4 : 1.0
           }
         }
 
-        // Accent ring while live (orange listen / blue process)
+        // Accent ring while live (orange listen / yellow process)
         Rectangle {
           anchors.fill: parent
           radius: width / 2
@@ -262,7 +163,7 @@ Panel {
           border.color: root.recording ? root.recordColor : root.workColor
           opacity: root.live ? 0.9 : 0
           Behavior on opacity {
-            NumberAnimation { duration: Style.duration(160) }
+            NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic }
           }
         }
 
@@ -297,11 +198,22 @@ Panel {
       implicitHeight: column.implicitHeight
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) {
+        if (dy === 0) return
+        var n = root.actionRows.length
+        if (n <= 0) return
+        root.cursor = root.cursor < 0 ? (dy > 0 ? 0 : n - 1) : (root.cursor + dy + n) % n
+      }
+      onActivateRequested: {
+        if (root.cursor >= 0 && root.cursor < root.actionRows.length)
+          root.runAction(root.actionRows[root.cursor].id)
+      }
       onTextKey: function(t) {
-        if (t === "d" || t === "D") root.dictateToggle()
-        else if (t === "l" || t === "L") root.openLog()
-        else if (t === "k" || t === "K") root.openKeyFile()
-        else if (t === "c" || t === "C") root.copyLast()
+        if (!root.service) return
+        if (t === "d" || t === "D") root.service.dictateToggle()
+        else if (t === "l" || t === "L") { root.service.openLog(); root.close() }
+        else if (t === "k" || t === "K") { root.service.openKeyFile(); root.close() }
+        else if (t === "c" || t === "C") { root.service.copyLast(); root.close() }
       }
 
       clip: true
@@ -320,7 +232,8 @@ Panel {
             sourceSize.width: 72
             sourceSize.height: 72
             fillMode: Image.PreserveAspectFit
-            smooth: false
+            smooth: true
+            mipmap: true
             anchors.verticalCenter: parent.verticalCenter
           }
           Column {
@@ -373,7 +286,8 @@ Panel {
           width: parent.width
           height: Style.space(34)
           radius: Style.space(6)
-          color: stopArea.containsMouse ? Qt.rgba(0.88, 0.08, 0.08, 0.95) : Qt.rgba(0.88, 0.08, 0.08, 0.75)
+          color: Util.alpha(root.errorColor, stopArea.containsMouse ? 0.95 : 0.78)
+          Behavior on color { ColorAnimation { duration: Style.duration(120) } }
           Text {
             anchors.centerIn: parent
             textFormat: Text.PlainText
@@ -388,7 +302,7 @@ Panel {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: { root.emergencyStop(); root.close() }
+            onClicked: { if (root.service) root.service.emergencyStop(); root.close() }
           }
         }
 
@@ -403,37 +317,21 @@ Panel {
           spacing: Style.space(8)
 
           Repeater {
-            model: {
-              var rows = []
-              if (root.recording)
-                rows.push({ id: "stop", label: "Stop listening" })
-              else if (root.processing)
-                rows.push({ id: "busy", label: "Working… (wait)" })
-              else
-                rows.push({ id: "start", label: "Start dictation" })
-              rows.push({ id: "polish", label: root.polishOn ? "Polish: ON (tap to disable)" : "Polish: OFF (tap to enable)" })
-              rows.push({ id: "style", label: "Style: " + root.styleName + " (tap to cycle)" })
-              rows.push({ id: "engine", label: "Engine: " + root.engineLabel() + " (tap to cycle)" })
-              rows.push({ id: "sounds", label: root.soundsOn ? "Sounds: ON (tap to disable)" : "Sounds: OFF (tap to enable)" })
-              if (root.micLabel.length > 0)
-                rows.push({ id: "mic", label: "Mic: " + root.micLabel + " (tap for config)" })
-              if (root.lastText.length > 0)
-                rows.push({ id: "copy", label: "Copy last transcript" })
-              if (root.state === "error")
-                rows.push({ id: "retry", label: "Retry last recording" })
-              if (root.state === "nokey")
-                rows.push({ id: "key", label: "Open API key file" })
-              rows.push({ id: "cfg", label: "Open config / vocab files" })
-              rows.push({ id: "log", label: "Open last log" })
-              return rows
-            }
+            model: root.actionRows
             Rectangle {
               required property var modelData
+              required property int index
+              readonly property bool busy: modelData.id === "busy"
+              readonly property bool focused: root.cursor === index
               width: parent.width
               height: Style.space(30)
               radius: Style.space(6)
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-              opacity: modelData.id === "busy" ? 0.55 : 1.0
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                             busy ? 0.08 : (rowArea.containsMouse || focused ? 0.2 : 0.12))
+              border.width: focused ? 1 : 0
+              border.color: Color.accent
+              opacity: busy ? 0.55 : 1.0
+              Behavior on color { ColorAnimation { duration: Style.duration(120) } }
               Text {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left
@@ -447,23 +345,13 @@ Panel {
                 width: parent.width - Style.space(20)
               }
               MouseArea {
+                id: rowArea
                 anchors.fill: parent
-                enabled: modelData.id !== "busy"
+                hoverEnabled: true
+                enabled: !busy
                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onClicked: {
-                  if (modelData.id === "start") { root.dictateStart(); root.close() }
-                  else if (modelData.id === "stop") { root.dictateStop() }
-                  else if (modelData.id === "polish") root.polishToggle()
-                  else if (modelData.id === "style") root.cycleStyle()
-                  else if (modelData.id === "engine") root.cycleEngine()
-                  else if (modelData.id === "sounds") root.soundsToggle()
-                  else if (modelData.id === "mic") { root.openConfig(); root.close() }
-                  else if (modelData.id === "copy") { root.copyLast(); root.close() }
-                  else if (modelData.id === "retry") { root.retryLast(); root.close() }
-                  else if (modelData.id === "key") { root.openKeyFile(); root.close() }
-                  else if (modelData.id === "cfg") { root.openConfig(); root.close() }
-                  else if (modelData.id === "log") { root.openLog(); root.close() }
-                }
+                onEntered: root.cursor = index
+                onClicked: root.runAction(modelData.id)
               }
             }
           }
@@ -478,7 +366,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "Hold Right Alt = talk · Alt+Space = toggle · Emergency stop: middle-click icon or Super+Ctrl+Esc · auto-stops at 10 min"
+          text: "Hold Right Alt = talk · Alt+Space = toggle · j/k + Enter navigate · Emergency stop: middle-click or Super+Ctrl+Esc"
           wrapMode: Text.WordWrap
           color: root.muted
           font.family: root.fontFamily
